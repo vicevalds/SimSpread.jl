@@ -11,6 +11,7 @@ using NamedArrays
 using Random
 using StatsBase
 using Trapz
+using LinearAlgebra
 
 include("graphs.jl")
 include("performance.jl")

@@ -272,7 +272,7 @@ function construct(ys::T, Xs::T) where {T<:Tuple{NamedMatrix,NamedMatrix}}
     namedB[queries, :] .= 0
     namedB[:, queries] .= 0
 
-    return namedA, namedB
+    return namedA, namedB, features, targets
 end
 
 """
@@ -370,6 +370,15 @@ function spread(G::AbstractMatrix{Float64})
     return W
 end
 
+function spread(A::AbstractMatrix{Float64}, B::AbstractMatrix{Float64})
+    W = A ./ k(B)
+    replace!(W, Inf => 0.0)
+    replace!(W, NaN => 0.0)
+
+    return W
+end
+
+
 spread(G::AbstractMatrix{Bool}) = spread(AbstractMatrix{Float64}(G))
 
 function spread(G::NamedMatrix)
@@ -400,19 +409,36 @@ model proposed by Wu, et al (2016).
    Chemical Similarity-Guided Network-Based Inference. International Journal of Molecular
    Sciences, 23(17), 9666. https://doi.org/10.3390/ijms23179666
 """
-function predict(I::Tuple{T,T}, ytest::T; GPU::Bool=false, returnweights::Bool=false) where {T<:NamedMatrix}
+function predict(I::Tuple{T,T,Vector{String},Vector{String}}, ytest::T; GPU::Bool=false, returnweights::T=missing) where {T<:NamedMatrix}
     # GPU calculations helper functions
     _useGPU(x::AbstractArray) = GPU ? CuArray{Float32}(x) : x
 
     # Target prediction using NBI
-    A, B = I
-    W = spread(B.array)
+    A, B, features, targets = I
+    if returnweights !== missing
+        W = spread(A, B)
+    else
+        W = spread(B)
+    end
     F = copy(A)
+    W2 = copy(W)
 
     Aarr = _useGPU(A.array)
-    Warr = _useGPU(W)
-    F.array = Aarr * Warr^2
+    Warr = _useGPU(W.array)
+    
+    W2.array = Warr^2
+    F.array = Aarr * W2.array
+    
+    Mft = W2[features, targets]
+    V = vec(A[names(ytest, 1), features])
+    diagonal = diagm(V)
+    influence_score_array = diagonal * Mft
 
+    influence_score = NamedArray(
+        influence_score_array,
+        (names(returnweights, 1), targets)
+    )
+    
     # Free GPU memory
     if GPU
         CUDA.unsafe_free!(Aarr)
@@ -420,12 +446,14 @@ function predict(I::Tuple{T,T}, ytest::T; GPU::Bool=false, returnweights::Bool=f
     end
 
     yhat = F[names(ytest, 1), names(ytest, 2)]
-    if returnweights
-        return yhat, W
+
+    if returnweights !== missing
+        return yhat, W2[names(returnweights, 1), names(ytest, 1)], influence_score
     else
         return yhat
     end
 end
+
 predict(A::T, B::T, ytest::T; kwargs...) where {T<:NamedMatrix} =
     predict((A, B), ytest; kwargs...)
 
